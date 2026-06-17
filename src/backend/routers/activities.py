@@ -52,18 +52,13 @@ def get_activities(
 @router.get("/days", response_model=List[str])
 def get_available_days() -> List[str]:
     """Get a list of all days that have activities scheduled"""
-    # Aggregate to get unique days across all activities
-    pipeline = [
-        {"$unwind": "$schedule_details.days"},
-        {"$group": {"_id": "$schedule_details.days"}},
-        {"$sort": {"_id": 1}}  # Sort days alphabetically
-    ]
+    days = set()
+    for activity in activities_collection.find({}):
+        schedule_days = activity.get("schedule_details", {}).get("days", [])
+        for day in schedule_days:
+            days.add(day)
 
-    days = []
-    for day_doc in activities_collection.aggregate(pipeline):
-        days.append(day_doc["_id"])
-
-    return days
+    return sorted(days)
 
 
 @router.post("/{activity_name}/signup")

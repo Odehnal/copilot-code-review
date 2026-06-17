@@ -5,11 +5,107 @@ MongoDB database configuration and setup for Mergington High School API
 from pymongo import MongoClient
 from argon2 import PasswordHasher, exceptions as argon2_exceptions
 
+
+def _get_nested_value(document, field_path):
+    value = document
+    for part in field_path.split('.'):
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        else:
+            return None
+    return value
+
+
+def _set_nested_value(document, field_path, value):
+    parts = field_path.split('.')
+    target = document
+    for part in parts[:-1]:
+        if part not in target or not isinstance(target[part], dict):
+            target[part] = {}
+        target = target[part]
+    target[parts[-1]] = value
+
+
+class InMemoryCollection:
+    def __init__(self):
+        self._docs = {}
+
+    def count_documents(self, filter=None):
+        if not filter:
+            return len(self._docs)
+        return sum(1 for doc in self.find(filter))
+
+    def find(self, filter=None):
+        if not filter:
+            return list(self._docs.values())
+        return [doc for doc in self._docs.values() if self._matches(doc, filter)]
+
+    def find_one(self, filter):
+        for doc in self.find(filter):
+            return doc
+        return None
+
+    def insert_one(self, document):
+        self._docs[document['_id']] = document
+        return type('Result', (), {'inserted_id': document['_id']})()
+
+    def update_one(self, filter, update):
+        doc = self.find_one(filter)
+        if not doc:
+            return type('Result', (), {'modified_count': 0})()
+
+        modified = False
+        if '$push' in update:
+            for field, value in update['$push'].items():
+                current = _get_nested_value(doc, field)
+                if isinstance(current, list):
+                    if value not in current:
+                        current.append(value)
+                        modified = True
+                else:
+                    _set_nested_value(doc, field, [value])
+                    modified = True
+
+        if '$pull' in update:
+            for field, value in update['$pull'].items():
+                current = _get_nested_value(doc, field)
+                if isinstance(current, list) and value in current:
+                    current.remove(value)
+                    modified = True
+
+        return type('Result', (), {'modified_count': 1 if modified else 0})()
+
+    def _matches(self, document, filter):
+        for key, condition in filter.items():
+            actual = _get_nested_value(document, key)
+            if isinstance(condition, dict):
+                if '$in' in condition:
+                    if actual is None or condition['$in'][0] not in actual:
+                        return False
+                if '$gte' in condition:
+                    if actual is None or actual < condition['$gte']:
+                        return False
+                if '$lte' in condition:
+                    if actual is None or actual > condition['$lte']:
+                        return False
+            else:
+                if actual != condition:
+                    return False
+        return True
+
+
 # Connect to MongoDB
-client = MongoClient('mongodb://localhost:27017/')
-db = client['mergington_high']
-activities_collection = db['activities']
-teachers_collection = db['teachers']
+try:
+    client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=2000)
+    client.admin.command('ping')
+    db = client['mergington_high']
+    activities_collection = db['activities']
+    teachers_collection = db['teachers']
+except Exception:
+    print('MongoDB not available; using in-memory fallback database.')
+    activities_collection = InMemoryCollection()
+    teachers_collection = InMemoryCollection()
+
 
 # Methods
 
